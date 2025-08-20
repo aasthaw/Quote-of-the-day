@@ -46,10 +46,33 @@ async function fetchWithTimeout(url: string, ms = 10000) {
 async function tryUrl(url: string, mode: "json" | "allorigins-get") {
   const r = await fetchWithTimeout(url, 10000);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  if (mode === "json") return r.json();
-  // allorigins/get returns { contents: "<raw text>" }
-  const wrapper = await r.json();
-  return JSON.parse(wrapper.contents);
+  
+  // First check if response is JSON
+  const contentType = r.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return r.json();
+  }
+  
+  // For allorigins mode, parse the wrapper
+  if (mode === "allorigins-get") {
+    const wrapper = await r.json();
+    if (wrapper.contents) {
+      try {
+        return JSON.parse(wrapper.contents);
+      } catch {
+        throw new Error("Failed to parse JSON from allorigins response");
+      }
+    }
+    throw new Error("Allorigins response missing contents");
+  }
+  
+  // For direct responses that might not be JSON
+  try {
+    const text = await r.text();
+    return JSON.parse(text);
+  } catch (e) {
+    throw new Error(`Response is not valid JSON: ${text.slice(0, 50)}...`);
+  }
 }
 
 /** build the list of candidate URLs (with cache-busting support) */
@@ -87,7 +110,14 @@ async function fetchZen(which: "today" | "random", attempt = 0) {
   for (const c of candidates) {
     try {
       const data = await tryUrl(c.url, c.mode);
-      return data; // array with one item
+      
+      // Validate the response structure
+      if (Array.isArray(data) && data[0]?.q && data[0]?.a) {
+        return data;
+      }
+      
+      // If we get here, the response is not in the expected format
+      throw new Error("Invalid API response format");
     } catch (e) {
       lastErr = e;
     }
@@ -274,9 +304,15 @@ export default function App() {
 
         // Fallback: select a fresh one from the full list (cached daily)
         if (!next || (quote && next.q === quote.q)) {
-          const all = await fetchAllQuotesForDay(tKey);
-          const pick = pickDistinctRandom(all, new Set<string>(recentSet));
-          if (pick) next = pick;
+          try {
+            const all = await fetchAllQuotesForDay(tKey);
+            const pick = pickDistinctRandom(all, new Set<string>(recentSet));
+            if (pick) next = pick;
+          } catch (e) {
+            console.error("Failed to fetch all quotes:", e);
+            // If we can't get new quotes, just keep the current one
+            if (!next) next = quote;
+          }
         }
       }
 
@@ -289,11 +325,27 @@ export default function App() {
       }
     } catch (e: any) {
       const msg = String(e?.message || "");
+      console.error("Fetch error:", e);
+      
       if (msg.includes("429")) {
         setError("Rate limited by ZenQuotes. Please wait a few seconds and try again.");
         lastCallRef.current = Date.now() + BACKOFF_429_MS;
       } else if (msg.includes("aborted")) {
         setError("The request timed out. Please try again.");
+      } else if (msg.includes("JSON") || msg.includes("format")) {
+        // If we have a cached quote, use it instead of showing error
+        if (which === "today") {
+          const tKey = todayKey();
+          const cached = localStorage.getItem(LS.TODAY_CACHE(tKey));
+          if (cached) {
+            try { 
+              setQuote(JSON.parse(cached)); 
+              setError(null);
+              return;
+            } catch {}
+          }
+        }
+        setError("API returned invalid data. Please try again.");
       } else {
         setError(msg || "Failed to fetch quote");
       }
@@ -329,7 +381,7 @@ export default function App() {
 
             <div className="menu-grid">
               <button className="menubtn" onClick={() => { setMenuOpen(false); load("today"); }}>
-                Today’s Quote
+                Today's Quote
               </button>
               <button className="menubtn" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
                 Switch mode ({theme === "dark" ? "Dark → Light" : "Light → Dark"})
@@ -346,7 +398,7 @@ export default function App() {
                 {favorites.map((f, i) => (
                   <li key={i} className="list-item">
                     <button className="link" onClick={() => { setQuote(f); setMenuOpen(false); }}>
-                      “{f.q}” — {f.a}
+                      "{f.q}" — {f.a}
                     </button>
                     <button className="smallbtn" onClick={() => saveFavorites(favorites.filter(x => !(x.q === f.q && x.a === f.a)))}>
                       Remove
@@ -362,7 +414,7 @@ export default function App() {
         <main>
           <div className="card">
             <div className="row">
-              <div className="pill">🔥 You’ve visited <b>{daysVisited}</b> day{daysVisited === 1 ? "" : "s"}</div>
+              <div className="pill">🔥 You've visited <b>{daysVisited}</b> day{daysVisited === 1 ? "" : "s"}</div>
               <button className={`pill ${isFavorite ? "active" : ""}`} onClick={toggleFavorite}>
                 {isFavorite ? "★ Favorited" : "☆ Save to favorites"}
               </button>
@@ -381,10 +433,10 @@ export default function App() {
 
             {!loading && !error && quote && (
               <>
-                <p className="quote">“{quote.q}”</p>
+                <p className="quote">"{quote.q}"</p>
                 <p className="author">— {quote.a}</p>
                 <div className="actions">
-                  <button className="btn" onClick={() => load("today")} disabled={loading}>Today’s Quote</button>
+                  <button className="btn" onClick={() => load("today")} disabled={loading}>Today's Quote</button>
                   <button className="btn" onClick={() => load("random")} disabled={loading}>New Random Quote</button>
                 </div>
               </>
@@ -399,4 +451,3 @@ export default function App() {
     </div>
   );
 }
-
