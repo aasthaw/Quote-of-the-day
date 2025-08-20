@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base: '/quote-of-the-day/',   
+  base: '/Quote-of-the-day/',   
   server: {
     proxy: {
       '/zen': {
