@@ -6,7 +6,7 @@ type Quote = { q: string; a: string };
 const LS = {
   THEME: "qotd-theme",
   FAVS: "qotd-favorites",
-  DAYS: "qotd-visited-days", // array of YYYY-MM-DD strings
+  DAYS: "qotd-visited-days",            // array of YYYY-MM-DD strings
   TODAY_CACHE: (key: string) => `qotd-today-${key}`,
 };
 
@@ -50,32 +50,53 @@ async function tryUrl(url: string, mode: "json" | "allorigins-get") {
   return JSON.parse(wrapper.contents);
 }
 
-async function fetchZen(which: "today" | "random") {
-  const upstream = `https://zenquotes.io/api/${which}`;
+/** fetches zenquotes with cache-busting (for random) and multiple fallbacks */
+async function fetchZen(which: "today" | "random", attempt = 0) {
+  // Add a cache-busting query only for random
+  const bust =
+    which === "random"
+      ? `?t=${Date.now()}-${attempt}-${Math.random().toString(36).slice(2)}`
+      : "";
+
+  const upstream = `https://zenquotes.io/api/${which}${bust}`;
 
   // ordered candidates to try
   const candidates: Array<{ url: string; mode: "json" | "allorigins-get" }> = [];
 
   if (isLocal) {
     // Vite dev proxy
-    candidates.push({ url: `/zen/api/${which}`, mode: "json" });
+    candidates.push({ url: `/zen/api/${which}${bust}`, mode: "json" });
   } else {
     // your own proxy (Vercel/Netlify) if provided
     if (API_BASE) {
-      candidates.push({ url: `${API_BASE}/api/zenquotes?which=${which}`, mode: "json" });
+      candidates.push({
+        url: `${API_BASE}/api/zenquotes?which=${which}${
+          which === "random" ? `&t=${Date.now()}-${attempt}` : ""
+        }`,
+        mode: "json",
+      });
     }
-    // public fallbacks for GitHub Pages demos
-    candidates.push({ url: `https://api.allorigins.win/raw?url=${encodeURIComponent(upstream)}`, mode: "json" });
-    candidates.push({ url: `https://api.allorigins.win/get?url=${encodeURIComponent(upstream)}`, mode: "allorigins-get" });
+    // public fallbacks for GitHub Pages demos (include bust in the upstream)
+    candidates.push({
+      url: `https://api.allorigins.win/raw?url=${encodeURIComponent(upstream)}`,
+      mode: "json",
+    });
+    candidates.push({
+      url: `https://api.allorigins.win/get?url=${encodeURIComponent(upstream)}`,
+      mode: "allorigins-get",
+    });
     // Jina read-only fetch (very permissive CORS). Use http target per their spec.
-    candidates.push({ url: `https://r.jina.ai/http://zenquotes.io/api/${which}`, mode: "json" });
+    candidates.push({
+      url: `https://r.jina.ai/http://zenquotes.io/api/${which}${bust}`,
+      mode: "json",
+    });
   }
 
   let lastErr: any = null;
   for (const c of candidates) {
     try {
       const data = await tryUrl(c.url, c.mode);
-      return data;
+      return data; // ZenQuotes returns an array with one item
     } catch (e) {
       lastErr = e;
       // continue to next candidate
@@ -107,7 +128,11 @@ export default function App() {
 
   /** Favorites */
   const [favorites, setFavorites] = useState<Quote[]>(() => {
-    try { return JSON.parse(localStorage.getItem(LS.FAVS) || "[]"); } catch { return []; }
+    try {
+      return JSON.parse(localStorage.getItem(LS.FAVS) || "[]");
+    } catch {
+      return [];
+    }
   });
   function saveFavorites(next: Quote[]) {
     setFavorites(next);
@@ -115,12 +140,12 @@ export default function App() {
   }
   const isFavorite = useMemo(() => {
     if (!quote) return false;
-    return favorites.some(f => f.q === quote.q && f.a === quote.a);
+    return favorites.some((f) => f.q === quote.q && f.a === quote.a);
   }, [quote, favorites]);
   function toggleFavorite() {
     if (!quote) return;
     if (isFavorite) {
-      saveFavorites(favorites.filter(f => !(f.q === quote.q && f.a === quote.a)));
+      saveFavorites(favorites.filter((f) => !(f.q === quote.q && f.a === quote.a)));
     } else {
       saveFavorites([{ q: quote.q, a: quote.a }, ...favorites].slice(0, 200));
     }
@@ -132,7 +157,9 @@ export default function App() {
       const raw = localStorage.getItem(LS.DAYS);
       const arr = raw ? JSON.parse(raw) : [];
       return Array.isArray(arr) ? arr.length : 0;
-    } catch { return 0; }
+    } catch {
+      return 0;
+    }
   });
   useEffect(() => {
     const key = todayKey();
@@ -159,19 +186,25 @@ export default function App() {
   /** Lock scroll when menu open */
   useEffect(() => {
     document.body.style.overflow = menuOpen ? "hidden" : "";
-    return () => { document.body.style.overflow = ""; };
+    return () => {
+      document.body.style.overflow = "";
+    };
   }, [menuOpen]);
 
   /** Throttle ref */
   const lastCallRef = useRef(0);
 
   /** Fetch on first load */
-  useEffect(() => { load("today"); }, []);
+  useEffect(() => {
+    load("today");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  /** Fetch helper with throttle & caching */
+  /** Fetch helper with throttle & caching + retry if random repeats */
   async function load(which: "today" | "random") {
     const now = Date.now();
-    if (now - lastCallRef.current < THROTTLE_MS) return;
+    const minGap = which === "random" ? 600 : THROTTLE_MS; // quicker for random
+    if (now - lastCallRef.current < minGap) return;
     lastCallRef.current = now;
 
     setLoading(true);
@@ -180,22 +213,32 @@ export default function App() {
     const tKey = todayKey();
 
     try {
-      // Show cached "today" fast
+      // Show cached "today" quickly
       if (which === "today") {
         const cached = localStorage.getItem(LS.TODAY_CACHE(tKey));
         if (cached) {
-          try { setQuote(JSON.parse(cached)); } catch { /* ignore */ }
+          try {
+            setQuote(JSON.parse(cached));
+          } catch {}
         }
       }
 
-      const data = await fetchZen(which);
+      // Fetch
+      let data = await fetchZen(which, 0);
+
+      // If a proxy cached the same random quote, try once more
+      if (which === "random" && quote && data[0]?.q === quote.q) {
+        data = await fetchZen(which, 1);
+      }
+
       if (!Array.isArray(data) || !data[0]?.q || !data[0]?.a) {
         throw new Error("Unexpected API response");
       }
 
       const q: Quote = { q: data[0].q, a: data[0].a };
       setQuote(q);
-      if (which === "today") localStorage.setItem(LS.TODAY_CACHE(tKey), JSON.stringify(q));
+      if (which === "today")
+        localStorage.setItem(LS.TODAY_CACHE(tKey), JSON.stringify(q));
     } catch (e: any) {
       const msg = String(e?.message || "");
       if (msg.includes("429")) {
@@ -216,7 +259,13 @@ export default function App() {
       <div className="screen">
         {/* Top bar */}
         <header className="topbar">
-          <button className="iconbtn" onClick={() => setMenuOpen(true)} aria-label="Open menu">☰</button>
+          <button
+            className="iconbtn"
+            onClick={() => setMenuOpen(true)}
+            aria-label="Open menu"
+          >
+            ☰
+          </button>
           <h1 className="brand">Quote of the Day</h1>
           <button
             className="iconbtn"
@@ -229,21 +278,35 @@ export default function App() {
         </header>
 
         {/* Drawer */}
-        <aside className={`drawer ${menuOpen ? "open" : ""}`} onClick={() => setMenuOpen(false)}>
+        <aside
+          className={`drawer ${menuOpen ? "open" : ""}`}
+          onClick={() => setMenuOpen(false)}
+        >
           <div className="drawer-panel" onClick={(e) => e.stopPropagation()}>
             <div className="drawer-header">
               <span />
-              <button className="closebtn" onClick={() => setMenuOpen(false)}>✕</button>
+              <button className="closebtn" onClick={() => setMenuOpen(false)}>
+                ✕
+              </button>
             </div>
 
             <div className="menu-grid">
-              <button className="menubtn" onClick={() => { setMenuOpen(false); load("today"); }}>
+              <button
+                className="menubtn"
+                onClick={() => {
+                  setMenuOpen(false);
+                  load("today");
+                }}
+              >
                 Today’s Quote
               </button>
-              <button className="menubtn" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+              <button
+                className="menubtn"
+                onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              >
                 Switch mode ({theme === "dark" ? "Dark → Light" : "Light → Dark"})
               </button>
-              <button className="menubtn" onClick={() => { /* favorites listed below */ }}>
+              <button className="menubtn" onClick={() => { /* favorites list below */ }}>
                 Favorites ({favorites.length})
               </button>
             </div>
@@ -254,10 +317,25 @@ export default function App() {
               <ul className="list">
                 {favorites.map((f, i) => (
                   <li key={i} className="list-item">
-                    <button className="link" onClick={() => { setQuote(f); setMenuOpen(false); }}>
+                    <button
+                      className="link"
+                      onClick={() => {
+                        setQuote(f);
+                        setMenuOpen(false);
+                      }}
+                      title="Show this favorite"
+                    >
                       “{f.q}” — {f.a}
                     </button>
-                    <button className="smallbtn" onClick={() => saveFavorites(favorites.filter(x => !(x.q === f.q && x.a === f.a)))}>
+                    <button
+                      className="smallbtn"
+                      onClick={() =>
+                        saveFavorites(
+                          favorites.filter((x) => !(x.q === f.q && x.a === f.a))
+                        )
+                      }
+                      title="Remove"
+                    >
                       Remove
                     </button>
                   </li>
@@ -271,7 +349,9 @@ export default function App() {
         <main>
           <div className="card">
             <div className="row">
-              <div className="pill">🔥 You’ve visited <b>{daysVisited}</b> day{daysVisited === 1 ? "" : "s"}</div>
+              <div className="pill">
+                🔥 You’ve visited <b>{daysVisited}</b> day{daysVisited === 1 ? "" : "s"}
+              </div>
               <button className={`pill ${isFavorite ? "active" : ""}`} onClick={toggleFavorite}>
                 {isFavorite ? "★ Favorited" : "☆ Save to favorites"}
               </button>
@@ -283,7 +363,9 @@ export default function App() {
               <>
                 <p className="error">Error: {error}</p>
                 <div className="actions">
-                  <button className="btn" onClick={() => load("today")} disabled={loading}>Retry</button>
+                  <button className="btn" onClick={() => load("today")} disabled={loading}>
+                    Retry
+                  </button>
                 </div>
               </>
             )}
@@ -293,14 +375,21 @@ export default function App() {
                 <p className="quote">“{quote.q}”</p>
                 <p className="author">— {quote.a}</p>
                 <div className="actions">
-                  <button className="btn" onClick={() => load("today")} disabled={loading}>Today’s Quote</button>
-                  <button className="btn" onClick={() => load("random")} disabled={loading}>New Random Quote</button>
+                  <button className="btn" onClick={() => load("today")} disabled={loading}>
+                    Today’s Quote
+                  </button>
+                  <button className="btn" onClick={() => load("random")} disabled={loading}>
+                    New Random Quote
+                  </button>
                 </div>
               </>
             )}
 
             <p className="source">
-              Quotes by <a href="https://zenquotes.io/" target="_blank" rel="noreferrer">ZenQuotes.io</a>
+              Quotes by{" "}
+              <a href="https://zenquotes.io/" target="_blank" rel="noreferrer">
+                ZenQuotes.io
+              </a>
             </p>
           </div>
         </main>
