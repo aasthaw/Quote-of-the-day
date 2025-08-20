@@ -6,12 +6,14 @@ type Quote = { q: string; a: string };
 const LS = {
   THEME: "qotd-theme",
   FAVS: "qotd-favorites",
-  DAYS: "qotd-visited-days",            // array of YYYY-MM-DD strings
+  DAYS: "qotd-visited-days", // array of YYYY-MM-DD strings
   TODAY_CACHE: (key: string) => `qotd-today-${key}`,
+  ALL_QUOTES: (key: string) => `qotd-allquotes-${key}`,
 };
 
 const THROTTLE_MS = 3500;
 const BACKOFF_429_MS = 12_000;
+const RECENT_MAX = 10;
 
 function todayKey() {
   const d = new Date();
@@ -50,59 +52,90 @@ async function tryUrl(url: string, mode: "json" | "allorigins-get") {
   return JSON.parse(wrapper.contents);
 }
 
-/** fetches zenquotes with cache-busting (for random) and multiple fallbacks */
-async function fetchZen(which: "today" | "random", attempt = 0) {
-  // Add a cache-busting query only for random
-  const bust =
-    which === "random"
-      ? `?t=${Date.now()}-${attempt}-${Math.random().toString(36).slice(2)}`
-      : "";
-
-  const upstream = `https://zenquotes.io/api/${which}${bust}`;
-
-  // ordered candidates to try
+/** build the list of candidate URLs (with cache-busting support) */
+function buildCandidates(path: string, bustQuery = ""): Array<{ url: string; mode: "json" | "allorigins-get" }> {
+  const upstream = `https://zenquotes.io/${path}${bustQuery}`;
   const candidates: Array<{ url: string; mode: "json" | "allorigins-get" }> = [];
 
   if (isLocal) {
     // Vite dev proxy
-    candidates.push({ url: `/zen/api/${which}${bust}`, mode: "json" });
+    candidates.push({ url: `/zen/${path}${bustQuery}`, mode: "json" });
   } else {
     // your own proxy (Vercel/Netlify) if provided
     if (API_BASE) {
-      candidates.push({
-        url: `${API_BASE}/api/zenquotes?which=${which}${
-          which === "random" ? `&t=${Date.now()}-${attempt}` : ""
-        }`,
-        mode: "json",
-      });
+      const proxied = `/api/zenquotes?path=${encodeURIComponent(path)}${bustQuery ? `&b=${encodeURIComponent(bustQuery)}` : ""}`;
+      candidates.push({ url: `${API_BASE}${proxied}`, mode: "json" });
     }
-    // public fallbacks for GitHub Pages demos (include bust in the upstream)
-    candidates.push({
-      url: `https://api.allorigins.win/raw?url=${encodeURIComponent(upstream)}`,
-      mode: "json",
-    });
-    candidates.push({
-      url: `https://api.allorigins.win/get?url=${encodeURIComponent(upstream)}`,
-      mode: "allorigins-get",
-    });
+    // public fallbacks for GitHub Pages demos
+    candidates.push({ url: `https://api.allorigins.win/raw?url=${encodeURIComponent(upstream)}`, mode: "json" });
+    candidates.push({ url: `https://api.allorigins.win/get?url=${encodeURIComponent(upstream)}`, mode: "allorigins-get" });
     // Jina read-only fetch (very permissive CORS). Use http target per their spec.
-    candidates.push({
-      url: `https://r.jina.ai/http://zenquotes.io/api/${which}${bust}`,
-      mode: "json",
-    });
+    candidates.push({ url: `https://r.jina.ai/http://zenquotes.io/${path}${bustQuery}`, mode: "json" });
   }
+  return candidates;
+}
+
+/** fetches zenquotes for /api/today or /api/random */
+async function fetchZen(which: "today" | "random", attempt = 0) {
+  const bust =
+    which === "random"
+      ? `?t=${Date.now()}-${attempt}-${Math.random().toString(36).slice(2)}`
+      : "";
+  const candidates = buildCandidates(`api/${which}`, bust);
 
   let lastErr: any = null;
   for (const c of candidates) {
     try {
       const data = await tryUrl(c.url, c.mode);
-      return data; // ZenQuotes returns an array with one item
+      return data; // array with one item
     } catch (e) {
       lastErr = e;
-      // continue to next candidate
     }
   }
   throw lastErr || new Error("All fetch attempts failed");
+}
+
+/** fetch the full quotes list (cached for the day) */
+async function fetchAllQuotesForDay(dayKey: string): Promise<Quote[]> {
+  // 1) try local cache first
+  try {
+    const raw = localStorage.getItem(LS.ALL_QUOTES(dayKey));
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) return arr;
+    }
+  } catch {}
+
+  // 2) else fetch fresh (with a small cache-buster to avoid proxy caches)
+  const bust = `?t=${Date.now()}`;
+  const candidates = buildCandidates("api/quotes", bust);
+
+  let lastErr: any = null;
+  for (const c of candidates) {
+    try {
+      const data = await tryUrl(c.url, c.mode);
+      // ZenQuotes returns an array of { q, a, ... }
+      if (Array.isArray(data) && data.length) {
+        const cleaned = data.map((x: any) => ({ q: x.q, a: x.a })).filter((x: any) => x?.q && x?.a);
+        localStorage.setItem(LS.ALL_QUOTES(dayKey), JSON.stringify(cleaned));
+        return cleaned;
+      }
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error("Failed to fetch quotes list");
+}
+
+/** pick a random quote from a list, avoiding any in the recent set */
+function pickDistinctRandom(list: Quote[], recent: Set<string>, maxTries = 30): Quote | null {
+  if (!list.length) return null;
+  for (let i = 0; i < maxTries; i++) {
+    const q = list[Math.floor(Math.random() * list.length)];
+    if (!recent.has(q.q)) return q;
+  }
+  // as a last resort, just return any
+  return list[Math.floor(Math.random() * list.length)];
 }
 
 /** --------- App --------- */
@@ -128,11 +161,7 @@ export default function App() {
 
   /** Favorites */
   const [favorites, setFavorites] = useState<Quote[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(LS.FAVS) || "[]");
-    } catch {
-      return [];
-    }
+    try { return JSON.parse(localStorage.getItem(LS.FAVS) || "[]"); } catch { return []; }
   });
   function saveFavorites(next: Quote[]) {
     setFavorites(next);
@@ -140,12 +169,12 @@ export default function App() {
   }
   const isFavorite = useMemo(() => {
     if (!quote) return false;
-    return favorites.some((f) => f.q === quote.q && f.a === quote.a);
+    return favorites.some(f => f.q === quote.q && f.a === quote.a);
   }, [quote, favorites]);
   function toggleFavorite() {
     if (!quote) return;
     if (isFavorite) {
-      saveFavorites(favorites.filter((f) => !(f.q === quote.q && f.a === quote.a)));
+      saveFavorites(favorites.filter(f => !(f.q === quote.q && f.a === quote.a)));
     } else {
       saveFavorites([{ q: quote.q, a: quote.a }, ...favorites].slice(0, 200));
     }
@@ -157,9 +186,7 @@ export default function App() {
       const raw = localStorage.getItem(LS.DAYS);
       const arr = raw ? JSON.parse(raw) : [];
       return Array.isArray(arr) ? arr.length : 0;
-    } catch {
-      return 0;
-    }
+    } catch { return 0; }
   });
   useEffect(() => {
     const key = todayKey();
@@ -186,24 +213,20 @@ export default function App() {
   /** Lock scroll when menu open */
   useEffect(() => {
     document.body.style.overflow = menuOpen ? "hidden" : "";
-    return () => {
-      document.body.style.overflow = "";
-    };
+    return () => { document.body.style.overflow = ""; };
   }, [menuOpen]);
 
-  /** Throttle ref */
+  /** Throttle & recent quote memory */
   const lastCallRef = useRef(0);
+  const recentRef = useRef<string[]>([]); // store recent quote texts to avoid repeats
 
   /** Fetch on first load */
-  useEffect(() => {
-    load("today");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useEffect(() => { load("today"); }, []);
 
-  /** Fetch helper with throttle & caching + retry if random repeats */
+  /** Fetch helper with throttle & caching + smart random */
   async function load(which: "today" | "random") {
     const now = Date.now();
-    const minGap = which === "random" ? 600 : THROTTLE_MS; // quicker for random
+    const minGap = which === "random" ? 450 : THROTTLE_MS; // quicker for random
     if (now - lastCallRef.current < minGap) return;
     lastCallRef.current = now;
 
@@ -213,32 +236,57 @@ export default function App() {
     const tKey = todayKey();
 
     try {
-      // Show cached "today" quickly
+      // Show cached "today" fast
       if (which === "today") {
         const cached = localStorage.getItem(LS.TODAY_CACHE(tKey));
         if (cached) {
-          try {
-            setQuote(JSON.parse(cached));
-          } catch {}
+          try { setQuote(JSON.parse(cached)); } catch {}
         }
       }
 
-      // Fetch
-      let data = await fetchZen(which, 0);
+      let next: Quote | null = null;
 
-      // If a proxy cached the same random quote, try once more
-      if (which === "random" && quote && data[0]?.q === quote.q) {
-        data = await fetchZen(which, 1);
+      if (which === "today") {
+        const data = await fetchZen("today", 0);
+        if (!Array.isArray(data) || !data[0]?.q || !data[0]?.a) throw new Error("Unexpected API response");
+        next = { q: data[0].q, a: data[0].a };
+        localStorage.setItem(LS.TODAY_CACHE(tKey), JSON.stringify(next));
+      } else {
+        // RANDOM: first try API with bust; retry once if same/recent
+        let data = await fetchZen("random", 0);
+        if (!Array.isArray(data) || !data[0]?.q || !data[0]?.a) throw new Error("Unexpected API response");
+        next = { q: data[0].q, a: data[0].a };
+
+        const recentSet = new Set<string>([...(quote ? [quote.q] : []), ...recentRef.current]);
+
+        if (recentSet.has(next.q)) {
+          // try once more via API (different bust)
+          data = await fetchZen("random", 1);
+          if (Array.isArray(data) && data[0]?.q && data[0]?.a) {
+            const candidate = { q: data[0].q, a: data[0].a };
+            if (!recentSet.has(candidate.q)) {
+              next = candidate;
+            } else {
+              next = null; // will fall back to local list
+            }
+          }
+        }
+
+        // Fallback: select a fresh one from the full list (cached daily)
+        if (!next || (quote && next.q === quote.q)) {
+          const all = await fetchAllQuotesForDay(tKey);
+          const pick = pickDistinctRandom(all, new Set<string>(recentSet));
+          if (pick) next = pick;
+        }
       }
 
-      if (!Array.isArray(data) || !data[0]?.q || !data[0]?.a) {
-        throw new Error("Unexpected API response");
-      }
+      if (!next) throw new Error("Could not find a new quote. Please try again.");
 
-      const q: Quote = { q: data[0].q, a: data[0].a };
-      setQuote(q);
-      if (which === "today")
-        localStorage.setItem(LS.TODAY_CACHE(tKey), JSON.stringify(q));
+      // Update UI + recent memory
+      setQuote(next);
+      if (!recentRef.current.includes(next.q)) {
+        recentRef.current = [next.q, ...recentRef.current].slice(0, RECENT_MAX);
+      }
     } catch (e: any) {
       const msg = String(e?.message || "");
       if (msg.includes("429")) {
@@ -259,13 +307,7 @@ export default function App() {
       <div className="screen">
         {/* Top bar */}
         <header className="topbar">
-          <button
-            className="iconbtn"
-            onClick={() => setMenuOpen(true)}
-            aria-label="Open menu"
-          >
-            ☰
-          </button>
+          <button className="iconbtn" onClick={() => setMenuOpen(true)} aria-label="Open menu">☰</button>
           <h1 className="brand">Quote of the Day</h1>
           <button
             className="iconbtn"
@@ -278,35 +320,21 @@ export default function App() {
         </header>
 
         {/* Drawer */}
-        <aside
-          className={`drawer ${menuOpen ? "open" : ""}`}
-          onClick={() => setMenuOpen(false)}
-        >
+        <aside className={`drawer ${menuOpen ? "open" : ""}`} onClick={() => setMenuOpen(false)}>
           <div className="drawer-panel" onClick={(e) => e.stopPropagation()}>
             <div className="drawer-header">
               <span />
-              <button className="closebtn" onClick={() => setMenuOpen(false)}>
-                ✕
-              </button>
+              <button className="closebtn" onClick={() => setMenuOpen(false)}>✕</button>
             </div>
 
             <div className="menu-grid">
-              <button
-                className="menubtn"
-                onClick={() => {
-                  setMenuOpen(false);
-                  load("today");
-                }}
-              >
+              <button className="menubtn" onClick={() => { setMenuOpen(false); load("today"); }}>
                 Today’s Quote
               </button>
-              <button
-                className="menubtn"
-                onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-              >
+              <button className="menubtn" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
                 Switch mode ({theme === "dark" ? "Dark → Light" : "Light → Dark"})
               </button>
-              <button className="menubtn" onClick={() => { /* favorites list below */ }}>
+              <button className="menubtn" onClick={() => { /* favorites listed below */ }}>
                 Favorites ({favorites.length})
               </button>
             </div>
@@ -317,25 +345,10 @@ export default function App() {
               <ul className="list">
                 {favorites.map((f, i) => (
                   <li key={i} className="list-item">
-                    <button
-                      className="link"
-                      onClick={() => {
-                        setQuote(f);
-                        setMenuOpen(false);
-                      }}
-                      title="Show this favorite"
-                    >
+                    <button className="link" onClick={() => { setQuote(f); setMenuOpen(false); }}>
                       “{f.q}” — {f.a}
                     </button>
-                    <button
-                      className="smallbtn"
-                      onClick={() =>
-                        saveFavorites(
-                          favorites.filter((x) => !(x.q === f.q && x.a === f.a))
-                        )
-                      }
-                      title="Remove"
-                    >
+                    <button className="smallbtn" onClick={() => saveFavorites(favorites.filter(x => !(x.q === f.q && x.a === f.a)))}>
                       Remove
                     </button>
                   </li>
@@ -349,9 +362,7 @@ export default function App() {
         <main>
           <div className="card">
             <div className="row">
-              <div className="pill">
-                🔥 You’ve visited <b>{daysVisited}</b> day{daysVisited === 1 ? "" : "s"}
-              </div>
+              <div className="pill">🔥 You’ve visited <b>{daysVisited}</b> day{daysVisited === 1 ? "" : "s"}</div>
               <button className={`pill ${isFavorite ? "active" : ""}`} onClick={toggleFavorite}>
                 {isFavorite ? "★ Favorited" : "☆ Save to favorites"}
               </button>
@@ -363,9 +374,7 @@ export default function App() {
               <>
                 <p className="error">Error: {error}</p>
                 <div className="actions">
-                  <button className="btn" onClick={() => load("today")} disabled={loading}>
-                    Retry
-                  </button>
+                  <button className="btn" onClick={() => load("today")} disabled={loading}>Retry</button>
                 </div>
               </>
             )}
@@ -375,21 +384,14 @@ export default function App() {
                 <p className="quote">“{quote.q}”</p>
                 <p className="author">— {quote.a}</p>
                 <div className="actions">
-                  <button className="btn" onClick={() => load("today")} disabled={loading}>
-                    Today’s Quote
-                  </button>
-                  <button className="btn" onClick={() => load("random")} disabled={loading}>
-                    New Random Quote
-                  </button>
+                  <button className="btn" onClick={() => load("today")} disabled={loading}>Today’s Quote</button>
+                  <button className="btn" onClick={() => load("random")} disabled={loading}>New Random Quote</button>
                 </div>
               </>
             )}
 
             <p className="source">
-              Quotes by{" "}
-              <a href="https://zenquotes.io/" target="_blank" rel="noreferrer">
-                ZenQuotes.io
-              </a>
+              Quotes by <a href="https://zenquotes.io/" target="_blank" rel="noreferrer">ZenQuotes.io</a>
             </p>
           </div>
         </main>
@@ -397,3 +399,4 @@ export default function App() {
     </div>
   );
 }
+
