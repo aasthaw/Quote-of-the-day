@@ -3,14 +3,14 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base:'/quote-of-the-day/',
+  base: '/quote-of-the-day/',   
   server: {
     proxy: {
       '/zen': {
         target: 'https://zenquotes.io',
         changeOrigin: true,
         secure: true,
-        rewrite: (path) => path.replace(/^\/zen/, ''),
+        rewrite: p => p.replace(/^\/zen/, ''),
       },
     },
   },
