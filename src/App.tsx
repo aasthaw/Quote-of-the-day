@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 /** --------- Types & constants --------- */
 type Quote = { q: string; a: string };
@@ -6,7 +6,7 @@ type Quote = { q: string; a: string };
 const LS = {
   THEME: "qotd-theme",
   FAVS: "qotd-favorites",
-  DAYS: "qotd-visited-days",
+  DAYS: "qotd-visited-days", // array of YYYY-MM-DD strings
   TODAY_CACHE: (key: string) => `qotd-today-${key}`,
 };
 
@@ -21,7 +21,7 @@ function todayKey() {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-/** ------- Fetch helper (dev + prod fallbacks) ------- **/
+/** ------- Fetch helpers (dev + prod fallbacks) ------- **/
 const isLocal =
   location.hostname === "localhost" ||
   location.hostname === "127.0.0.1" ||
@@ -29,6 +29,7 @@ const isLocal =
 
 const API_BASE = (import.meta as any).env?.VITE_API_BASE?.trim?.() || "";
 
+/** timeout wrapper so we never hang forever */
 async function fetchWithTimeout(url: string, ms = 10000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
@@ -39,27 +40,45 @@ async function fetchWithTimeout(url: string, ms = 10000) {
   }
 }
 
+/** small helper for trying a url with different parse modes */
+async function tryUrl(url: string, mode: "json" | "allorigins-get") {
+  const r = await fetchWithTimeout(url, 10000);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  if (mode === "json") return r.json();
+  // allorigins/get returns { contents: "<raw text>" }
+  const wrapper = await r.json();
+  return JSON.parse(wrapper.contents);
+}
+
 async function fetchZen(which: "today" | "random") {
-  const candidates: string[] = [];
+  const upstream = `https://zenquotes.io/api/${which}`;
+
+  // ordered candidates to try
+  const candidates: Array<{ url: string; mode: "json" | "allorigins-get" }> = [];
 
   if (isLocal) {
-    candidates.push(`/zen/api/${which}`); // Vite dev proxy
+    // Vite dev proxy
+    candidates.push({ url: `/zen/api/${which}`, mode: "json" });
   } else {
-    if (API_BASE) candidates.push(`${API_BASE}/api/zenquotes?which=${which}`); // your proxy
-    const upstream = `https://zenquotes.io/api/${which}`;
-    candidates.push(`https://api.allorigins.win/raw?url=${encodeURIComponent(upstream)}`);
-    candidates.push(`https://cors.isomorphic-git.org/${upstream}`);
+    // your own proxy (Vercel/Netlify) if provided
+    if (API_BASE) {
+      candidates.push({ url: `${API_BASE}/api/zenquotes?which=${which}`, mode: "json" });
+    }
+    // public fallbacks for GitHub Pages demos
+    candidates.push({ url: `https://api.allorigins.win/raw?url=${encodeURIComponent(upstream)}`, mode: "json" });
+    candidates.push({ url: `https://api.allorigins.win/get?url=${encodeURIComponent(upstream)}`, mode: "allorigins-get" });
+    // Jina read-only fetch (very permissive CORS). Use http target per their spec.
+    candidates.push({ url: `https://r.jina.ai/http://zenquotes.io/api/${which}`, mode: "json" });
   }
 
   let lastErr: any = null;
-  for (const url of candidates) {
+  for (const c of candidates) {
     try {
-      const r = await fetchWithTimeout(url, 10000);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const txt = await r.text();
-      return JSON.parse(txt);
+      const data = await tryUrl(c.url, c.mode);
+      return data;
     } catch (e) {
       lastErr = e;
+      // continue to next candidate
     }
   }
   throw lastErr || new Error("All fetch attempts failed");
@@ -67,9 +86,10 @@ async function fetchZen(which: "today" | "random") {
 
 /** --------- App --------- */
 export default function App() {
+  /** Menu open/close */
   const [menuOpen, setMenuOpen] = useState(false);
 
-  // theme (saved in <html data-theme="...">)
+  /** Theme */
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     const stored = localStorage.getItem(LS.THEME);
     if (stored === "light" || stored === "dark") return stored;
@@ -80,12 +100,12 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
-  // quote state
+  /** Quote data */
   const [quote, setQuote] = useState<Quote | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // favorites
+  /** Favorites */
   const [favorites, setFavorites] = useState<Quote[]>(() => {
     try { return JSON.parse(localStorage.getItem(LS.FAVS) || "[]"); } catch { return []; }
   });
@@ -106,7 +126,7 @@ export default function App() {
     }
   }
 
-  // “streak” of unique days visited
+  /** Day-based streak (unique days visited) */
   const [daysVisited, setDaysVisited] = useState<number>(() => {
     try {
       const raw = localStorage.getItem(LS.DAYS);
@@ -136,20 +156,23 @@ export default function App() {
     }
   }, []);
 
-  // lock scroll when menu open
+  /** Lock scroll when menu open */
   useEffect(() => {
     document.body.style.overflow = menuOpen ? "hidden" : "";
     return () => { document.body.style.overflow = ""; };
   }, [menuOpen]);
 
-  // initial fetch
+  /** Throttle ref */
+  const lastCallRef = useRef(0);
+
+  /** Fetch on first load */
   useEffect(() => { load("today"); }, []);
 
-  let lastCall = 0;
+  /** Fetch helper with throttle & caching */
   async function load(which: "today" | "random") {
     const now = Date.now();
-    if (now - lastCall < THROTTLE_MS) return;
-    lastCall = now;
+    if (now - lastCallRef.current < THROTTLE_MS) return;
+    lastCallRef.current = now;
 
     setLoading(true);
     setError(null);
@@ -157,10 +180,11 @@ export default function App() {
     const tKey = todayKey();
 
     try {
+      // Show cached "today" fast
       if (which === "today") {
         const cached = localStorage.getItem(LS.TODAY_CACHE(tKey));
         if (cached) {
-          try { setQuote(JSON.parse(cached)); } catch {}
+          try { setQuote(JSON.parse(cached)); } catch { /* ignore */ }
         }
       }
 
@@ -176,7 +200,7 @@ export default function App() {
       const msg = String(e?.message || "");
       if (msg.includes("429")) {
         setError("Rate limited by ZenQuotes. Please wait a few seconds and try again.");
-        lastCall = Date.now() + BACKOFF_429_MS;
+        lastCallRef.current = Date.now() + BACKOFF_429_MS;
       } else if (msg.includes("aborted")) {
         setError("The request timed out. Please try again.");
       } else {

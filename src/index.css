@@ -2,61 +2,28 @@
 html, body, #root { height: 100%; }
 body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
 
-/* App background wrapper */
 .app-bg {
   min-height: 100vh;
-  background: linear-gradient(135deg, #f7fafc, #eef2f7 50%, #eaf0f8);
+  background: radial-gradient(1200px 800px at 10% 0%, #f7fafc 0%, #eef2f7 40%, #eaf0f8 100%);
   transition: background 0.5s ease;
 }
-
-/* Dark mode background uses the same data-theme you already set on <html> */
 :root[data-theme="dark"] .app-bg {
-  background: linear-gradient(135deg, #0f172a, #0f172a 50%, #111827);
+  background: radial-gradient(1200px 800px at 10% 0%, #0f172a 0%, #0f172a 40%, #111827 100%);
 }
 
-/* (everything below can stay as you had it; included here in case you need it) */
 :root { --bg:#f3f4f6; --fg:#111827; --card:#fff; --border:rgba(0,0,0,.08); --muted:#6b7280; }
 :root[data-theme="dark"] { --bg:#0f172a; --fg:#e5e7eb; --card:#0b1220; --border:rgba(255,255,255,.08); --muted:#9ca3af; }
 
 * { box-sizing: border-box; }
+
 .screen { min-height: 100vh; display: grid; grid-template-rows: auto 1fr; }
 main { max-width: 900px; margin: 24px auto; padding: 0 16px; display: grid; gap: 16px; }
-.topbar { display:flex; align-items:center; justify-content:space-between; padding: 12px 16px; border-bottom:1px solid var(--border); background: var(--card); position: sticky; top:0; z-index: 5; border-radius: 12px; margin: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.06); }
+
+.topbar {
+  display:flex; align-items:center; justify-content:space-between;
+  padding: 12px 16px; border-bottom:1px solid var(--border); background: var(--card);
+  position: sticky; top:0; z-index: 5; border-radius: 12px; margin: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.06);
+}
 .brand { margin:0; font-size:20px; }
-.iconbtn { background: transparent; border:1px solid var(--border); border-radius:10px; padding:6px 10px; color:inherit; cursor:pointer; }
-.iconbtn:hover { filter: brightness(1.1); }
-
-.drawer { position: fixed; inset: 0; z-index: 50; pointer-events: none; }
-.drawer.open { pointer-events: auto; }
-.drawer::before { content: ""; position: absolute; inset: 0; background: rgba(0,0,0,0); transition: background .2s ease; }
-.drawer.open::before { background: rgba(0,0,0,.55); }
-.drawer-panel { position: absolute; top: 0; left: 0; height: 100%; width: 340px; max-width: 85%; background: var(--card); color: var(--fg); border-right: 1px solid var(--border); transform: translateX(-100%); transition: transform .22s ease; display: flex; flex-direction: column; box-shadow: 0 20px 40px rgba(0,0,0,.2); }
-.drawer.open .drawer-panel { transform: translateX(0); }
-.drawer-header { display:flex; align-items:center; justify-content: space-between; padding: 12px; border-bottom: 1px solid var(--border); }
-.closebtn { background: transparent; color: inherit; border: 1px solid var(--border); padding: 6px 10px; border-radius: 10px; cursor: pointer; }
-
-.menu-grid { display: grid; gap: 10px; padding: 12px; }
-.menubtn { width: 100%; text-align: left; background: transparent; color: inherit; border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; cursor: pointer; }
-.menubtn:hover { filter: brightness(1.05); }
-
-.panel-scroll { padding: 12px; overflow: auto; height: 100%; }
-.list { list-style: none; padding-left: 0; margin: 0; }
-.list-item { display:flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
-.link { background: none; border: none; color: inherit; cursor: pointer; text-align: left; }
-.link:hover { text-decoration: underline; }
-.smallbtn { border: 1px solid var(--border); background: transparent; color: inherit; padding: 4px 8px; border-radius: 8px; cursor: pointer; }
-
-.card { background: var(--card); border:1px solid var(--border); border-radius:16px; padding: 20px; box-shadow: 0 12px 32px rgba(0,0,0,.08); }
-.row { display:flex; align-items:center; gap: 10px; justify-content: space-between; }
-.pill { padding:6px 10px; border:1px solid var(--border); border-radius:999px; font-size: 12px; background: rgba(255,255,255,.7); }
-.pill.active { background:#ffd16622; }
-.quote { font-size:22px; line-height:1.6; font-style: italic; margin: 14px 0 6px; }
-.author { opacity:.8; }
-.actions { margin-top: 12px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
-.btn { padding:10px 14px; border-radius:10px; border:1px solid var(--border); background: #0f172a; color: white; cursor:pointer; }
-:root[data-theme="dark"] .btn { background: #1f2937; color: #e5e7eb; }
-.btn:hover { filter: brightness(1.05); }
-
-.muted { color: var(--muted); }
-.error { color: #ef4444; }
-.source { margin-top: 8px; font-size: 12px; opacity: .6; }
+.iconbtn { background: transparent; border:1px solid var(--border); border-radius:10px; padding:
