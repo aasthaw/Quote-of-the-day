@@ -1,69 +1,70 @@
 # React + TypeScript + Vite
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A simple, user-friendly web app that displays motivational quotes fetched from the ZenQuotes API. 
 
-Currently, two official plugins are available:
+Built with React, Vite, and TypeScript — deployed on GitHub Pages.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
 
-## Expanding the ESLint configuration
+Features - 
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+Daily quote: fetches and shows the quote of the day
+Random quotes: get a new random quote anytime
+Favorites: save or remove quotes (saved in browser storage)
+Dark / light mode: switch themes, setting is remembered
+Streak: tracks how many days you’ve opened the app
+Simple and responsive design with a side menu
 
-```js
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
 
-      // Remove tseslint.configs.recommended and replace with this
-      ...tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      ...tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      ...tseslint.configs.stylisticTypeChecked,
+Tech Stack- 
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+React
+Vite
+TypeScript
+CSS (custom styling)
+ZenQuotes API
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Getting Started
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+1. Clone the repo
+git clone https://github.com/<your-username>/<your-repo-name>.git
+cd <your-repo-name>
 
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+2. Install dependencies
+npm install
+
+3. Run locally
+npm run dev
+
+
+App will be available at: http://localhost:5173
+
+Deployment (GitHub Pages)
+
+1. Ensure vite.config.ts has your correct repo name:
+
+const repoName = 'YourRepoName';
+export default defineConfig({
+  base: `/${repoName}/`,
+  plugins: [react()],
+})
+
+2. Push code to GitHub.
+
+3. GitHub Actions workflow (.github/workflows/deploy.yml) will build and deploy automatically.
+
+4. Your site will be live at:
+
+https://<your-username>.github.io/<your-repo-name>/
+
+
+API Notes - 
+
+Free tier allows 5 requests per 30 seconds.
+Cached daily quotes reduce API calls.
+Attribution is required when using ZenQuotes → link back to zenquotes.io
+
+
+
+License
+
+MIT License © 2025 [Aastha]
