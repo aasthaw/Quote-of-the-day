@@ -6,7 +6,7 @@ type Quote = { q: string; a: string };
 const LS = {
   THEME: "qotd-theme",
   FAVS: "qotd-favorites",
-  DAYS: "qotd-visited-days", // array of YYYY-MM-DD strings
+  DAYS: "qotd-visited-days",
   TODAY_CACHE: (key: string) => `qotd-today-${key}`,
 };
 
@@ -21,45 +21,55 @@ function todayKey() {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-/** ------- Fetch helper that works locally AND on GitHub Pages ------- **/
+/** ------- Fetch helper (dev + prod fallbacks) ------- **/
 const isLocal =
   location.hostname === "localhost" ||
   location.hostname === "127.0.0.1" ||
   location.hostname.startsWith("192.168.");
 
 const API_BASE = (import.meta as any).env?.VITE_API_BASE?.trim?.() || "";
-// If you deploy a proxy (Vercel/Netlify), put its origin in VITE_API_BASE,
-// e.g. https://your-app.vercel.app   (NO trailing slash)
+
+async function fetchWithTimeout(url: string, ms = 10000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { signal: ctrl.signal, cache: "no-store" });
+  } finally {
+    clearTimeout(t);
+  }
+}
 
 async function fetchZen(which: "today" | "random") {
+  const candidates: string[] = [];
+
   if (isLocal) {
-    // Dev: use Vite proxy (/zen -> zenquotes.io) from vite.config.ts
-    const r = await fetch(`/zen/api/${which}`);
-    if (!r.ok) throw new Error(`Request failed: ${r.status}`);
-    return r.json();
+    candidates.push(`/zen/api/${which}`); // Vite dev proxy
+  } else {
+    if (API_BASE) candidates.push(`${API_BASE}/api/zenquotes?which=${which}`); // your proxy
+    const upstream = `https://zenquotes.io/api/${which}`;
+    candidates.push(`https://api.allorigins.win/raw?url=${encodeURIComponent(upstream)}`);
+    candidates.push(`https://cors.isomorphic-git.org/${upstream}`);
   }
 
-  if (API_BASE) {
-    // Prod with your own proxy
-    const r = await fetch(`${API_BASE}/api/zenquotes?which=${which}`, { cache: "no-store" });
-    if (!r.ok) throw new Error(`Request failed: ${r.status}`);
-    return r.json();
+  let lastErr: any = null;
+  for (const url of candidates) {
+    try {
+      const r = await fetchWithTimeout(url, 10000);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const txt = await r.text();
+      return JSON.parse(txt);
+    } catch (e) {
+      lastErr = e;
+    }
   }
-
-  // Fallback: public CORS passthrough (good enough for demo on GitHub Pages)
-  const url = `https://zenquotes.io/api/${which}`;
-  const proxied = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-  const r = await fetch(proxied, { cache: "no-store" });
-  if (!r.ok) throw new Error(`Request failed: ${r.status}`);
-  return r.json();
+  throw lastErr || new Error("All fetch attempts failed");
 }
 
 /** --------- App --------- */
 export default function App() {
-  /** Menu state */
   const [menuOpen, setMenuOpen] = useState(false);
 
-  /** Theme */
+  // theme (saved in <html data-theme="...">)
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     const stored = localStorage.getItem(LS.THEME);
     if (stored === "light" || stored === "dark") return stored;
@@ -70,12 +80,12 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
-  /** Quote data */
+  // quote state
   const [quote, setQuote] = useState<Quote | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  /** Favorites */
+  // favorites
   const [favorites, setFavorites] = useState<Quote[]>(() => {
     try { return JSON.parse(localStorage.getItem(LS.FAVS) || "[]"); } catch { return []; }
   });
@@ -96,7 +106,7 @@ export default function App() {
     }
   }
 
-  /** Day-based streak (unique days visited) */
+  // “streak” of unique days visited
   const [daysVisited, setDaysVisited] = useState<number>(() => {
     try {
       const raw = localStorage.getItem(LS.DAYS);
@@ -126,16 +136,15 @@ export default function App() {
     }
   }, []);
 
-  /** Lock scroll when menu open */
+  // lock scroll when menu open
   useEffect(() => {
     document.body.style.overflow = menuOpen ? "hidden" : "";
     return () => { document.body.style.overflow = ""; };
   }, [menuOpen]);
 
-  /** Fetch on first load */
+  // initial fetch
   useEffect(() => { load("today"); }, []);
 
-  /** Fetch helper with throttle & caching */
   let lastCall = 0;
   async function load(which: "today" | "random") {
     const now = Date.now();
@@ -148,11 +157,10 @@ export default function App() {
     const tKey = todayKey();
 
     try {
-      // Show cached "today" fast
       if (which === "today") {
         const cached = localStorage.getItem(LS.TODAY_CACHE(tKey));
         if (cached) {
-          try { setQuote(JSON.parse(cached)); } catch { /* ignore */ }
+          try { setQuote(JSON.parse(cached)); } catch {}
         }
       }
 
@@ -165,11 +173,14 @@ export default function App() {
       setQuote(q);
       if (which === "today") localStorage.setItem(LS.TODAY_CACHE(tKey), JSON.stringify(q));
     } catch (e: any) {
-      if (String(e?.message || "").includes("429")) {
+      const msg = String(e?.message || "");
+      if (msg.includes("429")) {
         setError("Rate limited by ZenQuotes. Please wait a few seconds and try again.");
         lastCall = Date.now() + BACKOFF_429_MS;
+      } else if (msg.includes("aborted")) {
+        setError("The request timed out. Please try again.");
       } else {
-        setError(e?.message ?? "Failed to fetch quote");
+        setError(msg || "Failed to fetch quote");
       }
     } finally {
       setLoading(false);
@@ -177,18 +188,11 @@ export default function App() {
   }
 
   return (
-    // Soothing gradient background (Tailwind). Works even if Tailwind isn’t present—no errors, just no gradient.
-    <div className="min-h-screen bg-gradient-to-br from-[#f7fafc] via-[#eef2f7] to-[#eaf0f8] dark:from-slate-900 dark:via-slate-900 dark:to-slate-800 transition-colors duration-500">
+    <div className="app-bg">
       <div className="screen">
         {/* Top bar */}
         <header className="topbar">
-          <button
-            className="iconbtn"
-            onClick={() => { setMenuOpen(true); }}
-            aria-label="Open menu"
-          >
-            ☰
-          </button>
+          <button className="iconbtn" onClick={() => setMenuOpen(true)} aria-label="Open menu">☰</button>
           <h1 className="brand">Quote of the Day</h1>
           <button
             className="iconbtn"
@@ -208,7 +212,6 @@ export default function App() {
               <button className="closebtn" onClick={() => setMenuOpen(false)}>✕</button>
             </div>
 
-            {/* Root menu */}
             <div className="menu-grid">
               <button className="menubtn" onClick={() => { setMenuOpen(false); load("today"); }}>
                 Today’s Quote
@@ -216,30 +219,21 @@ export default function App() {
               <button className="menubtn" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
                 Switch mode ({theme === "dark" ? "Dark → Light" : "Light → Dark"})
               </button>
-              <button className="menubtn" onClick={() => {/* favorites list is below */}}>
+              <button className="menubtn" onClick={() => { /* favorites listed below */ }}>
                 Favorites ({favorites.length})
               </button>
             </div>
 
-            {/* Favorites list */}
             <div className="panel-scroll">
               <h3>Favorites ({favorites.length})</h3>
               {favorites.length === 0 && <p className="muted">No favorites yet.</p>}
               <ul className="list">
                 {favorites.map((f, i) => (
                   <li key={i} className="list-item">
-                    <button
-                      className="link"
-                      onClick={() => { setQuote(f); setMenuOpen(false); }}
-                      title="Show this favorite"
-                    >
+                    <button className="link" onClick={() => { setQuote(f); setMenuOpen(false); }}>
                       “{f.q}” — {f.a}
                     </button>
-                    <button
-                      className="smallbtn"
-                      onClick={() => saveFavorites(favorites.filter(x => !(x.q === f.q && x.a === f.a)))}
-                      title="Remove"
-                    >
+                    <button className="smallbtn" onClick={() => saveFavorites(favorites.filter(x => !(x.q === f.q && x.a === f.a)))}>
                       Remove
                     </button>
                   </li>
